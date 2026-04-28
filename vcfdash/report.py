@@ -201,6 +201,14 @@ def embed_assets(template_dir: Path) -> tuple[str, str]:
 # JS payload builder
 # ---------------------------------------------------------------------------
 
+# Maximum number of variants for which we embed sparkline windows.
+# Beyond this, sparklines are disabled to keep the HTML file small.
+# At WINDOW=150bp × 2 sides = 300 positions × ~10 bytes/pos ≈ 3KB per variant.
+# 5000 variants × 3KB = ~15 MB embedded — acceptable.
+_MAX_SPARK_VARIANTS = 5000
+_SPARK_WINDOW       = 150   # ±150 bp around the variant position
+
+
 def _build_js_payload(
     qc_summary: dict,
     coverage_data: dict,
@@ -210,22 +218,49 @@ def _build_js_payload(
     """
     Serialise all report data to a JSON string for inline embedding.
 
-    Sparkline data is included only when available and --no-sparklines not set.
+    Sparkline strategy (fixes 1.1 GB HTML bug):
+    - Do NOT embed the full per-base genome index (chrom → {pos: depth}).
+    - Instead, pre-extract only a ±150 bp window around each variant at
+      Python time and embed a per-variant array: [[depth0, depth1, ...], ...]
+      indexed to match the variants array.
+    - The JS reads spark_windows[variantIndex] directly — no client-side slicing.
+    - If there are more than _MAX_SPARK_VARIANTS, sparklines are disabled
+      to prevent the HTML from becoming excessively large.
     """
     no_sparklines  = getattr(args, "no_sparklines", False)
     sparkline_data = coverage_data.get("sparkline_data", {})
 
-    # Build per-variant sparkline windows
-    # We serialize chrom -> {pos: depth} for the whole covered region and let
-    # viz.js slice the 200bp window on the client side.
-    # For large datasets this may be megabytes; use no_sparklines to disable.
-    spark_payload: dict[str, Any] = {}
-    if not no_sparklines and sparkline_data:
-        # Convert position keys to strings for JSON compatibility
-        for chrom, positions in sparkline_data.items():
-            spark_payload[chrom] = {str(p): d for p, d in positions.items()}
+    has_sparklines = (
+        not no_sparklines
+        and bool(sparkline_data)
+        and len(variant_data) <= _MAX_SPARK_VARIANTS
+    )
 
-    # Sanitize variants for JSON (remove non-serializable ad arrays → lists)
+    if not no_sparklines and bool(sparkline_data) and len(variant_data) > _MAX_SPARK_VARIANTS:
+        print(
+            f"[vcfdash] INFO: {len(variant_data)} variants > {_MAX_SPARK_VARIANTS} limit — "
+            "sparklines disabled to keep report size small. Use --no-sparklines to suppress this message.",
+            file=sys.stderr,
+        )
+
+    # Pre-extract ±WINDOW bp windows for each variant
+    # spark_windows[i] = list of depths from pos-WINDOW to pos+WINDOW (inclusive)
+    #                    length = 2*WINDOW+1, missing positions → 0
+    spark_windows: list[list[int]] = []
+    spark_start_pos: list[int] = []   # starting genomic position of each window (for X axis in JS)
+
+    if has_sparklines:
+        for v in variant_data:
+            chrom = v.get("chrom", "")
+            pos   = v.get("pos", 0)
+            chrom_data = sparkline_data.get(chrom, {})
+            start = max(1, pos - _SPARK_WINDOW)
+            end   = pos + _SPARK_WINDOW
+            depths = [int(chrom_data.get(p, 0)) for p in range(start, end + 1)]
+            spark_windows.append(depths)
+            spark_start_pos.append(start)
+
+    # Sanitize variants for JSON (ad arrays → lists)
     variants_clean = []
     for v in variant_data:
         vc = dict(v)
@@ -236,15 +271,19 @@ def _build_js_payload(
     payload = {
         "sample_id":      args.sample_id,
         "genome":         getattr(args, "genome", "hg38"),
-        "has_sparklines": not no_sparklines and bool(sparkline_data),
+        "has_sparklines": has_sparklines,
+        "spark_window":   _SPARK_WINDOW,
         "thresholds": {
             "min_dp":  args.min_dp,
             "min_dp2": args.min_dp2,
         },
-        "qc":        qc_summary,
-        "coverage":  coverage_data.get("per_region", []),
-        "variants":  variants_clean,
-        "sparklines": spark_payload,
+        "qc":              qc_summary,
+        "coverage":        coverage_data.get("per_region", []),
+        "variants":        variants_clean,
+        # spark_windows[i] aligns with variants[i]
+        # Each entry is a list of (2*WINDOW+1) depth ints starting at spark_start[i]
+        "spark_windows":   spark_windows,
+        "spark_start":     spark_start_pos,
     }
 
     return json.dumps(payload, ensure_ascii=False, allow_nan=False, cls=_NumpySafeEncoder)

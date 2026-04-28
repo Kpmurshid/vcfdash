@@ -8,15 +8,20 @@
   "use strict";
 
   /* ── Config from embedded data ──────────────────────── */
-  const DATA        = window.VCFDASH || {};
-  const VARIANTS    = DATA.variants    || [];
-  const COVERAGE    = DATA.coverage    || [];
-  const SPARK_DATA  = DATA.sparklines  || {};   // {chrom: {pos: depth}}
-  const QC          = DATA.qc          || {};
-  const THRESHOLDS  = DATA.thresholds  || { min_dp: 20, min_dp2: 10 };
-  const MIN_DP      = THRESHOLDS.min_dp;
-  const MIN_DP2     = THRESHOLDS.min_dp2;
-  const HAS_SPARKS  = DATA.has_sparklines !== false;
+  const DATA          = window.VCFDASH || {};
+  const VARIANTS      = DATA.variants      || [];
+  const COVERAGE      = DATA.coverage      || [];
+  // Sparkline format: parallel arrays aligned with VARIANTS
+  // SPARK_WINDOWS[i] = depth array for variant i (length = 2*SPARK_WINDOW+1)
+  // SPARK_START[i]   = genomic start position of that window
+  const SPARK_WINDOWS = DATA.spark_windows || [];
+  const SPARK_START   = DATA.spark_start   || [];
+  const SPARK_WINDOW  = DATA.spark_window  || 150;
+  const QC            = DATA.qc            || {};
+  const THRESHOLDS    = DATA.thresholds    || { min_dp: 20, min_dp2: 10 };
+  const MIN_DP        = THRESHOLDS.min_dp;
+  const MIN_DP2       = THRESHOLDS.min_dp2;
+  const HAS_SPARKS    = DATA.has_sparklines === true;
 
   /* ── Colour helpers ─────────────────────────────────── */
   function depthColor(d) {
@@ -59,8 +64,8 @@
   }
 
   function varTypeBadge(vt) {
-    const map = { SNV: "badge-snv", INDEL: "badge-indel", MNV: "badge-mnv" };
-    return `<span class="badge ${map[vt] || 'badge-snv'}">${vt || "SNV"}</span>`;
+    const map = { SNV: "badge-snv", INDEL: "badge-indel", MNV: "badge-mnv", SV: "badge-sv" };
+    return `<span class="badge ${map[vt] || "badge-snv"}">${vt || "SNV"}</span>`;
   }
 
   /* ── Generic table sorter ───────────────────────────── */
@@ -70,13 +75,12 @@
     let sortDir   = 1;
 
     headers.forEach(th => {
-      // inject sort icon span
       const icon = document.createElement("i");
       icon.className = "sort-icon";
       th.appendChild(icon);
 
       th.addEventListener("click", () => {
-        const col = th.dataset.col;
+        const col  = th.dataset.col;
         const type = th.dataset.type || "str";
 
         if (sortCol === col) {
@@ -95,21 +99,12 @@
         rows.sort((a, b) => {
           const av = a.dataset[col] ?? a.cells[parseInt(th.dataset.idx || 0)]?.textContent ?? "";
           const bv = b.dataset[col] ?? b.cells[parseInt(th.dataset.idx || 0)]?.textContent ?? "";
-
-          if (type === "num") {
-            return (parseFloat(av) - parseFloat(bv)) * sortDir;
-          }
+          if (type === "num") return (parseFloat(av) - parseFloat(bv)) * sortDir;
           return av.localeCompare(bv, undefined, { sensitivity: "base" }) * sortDir;
         });
 
-        // Reinsert rows (keep detail rows paired)
         rows.forEach(row => {
           tbody.appendChild(row);
-          const detailId = row.dataset.detailFor;
-          if (detailId) {
-            const detail = document.getElementById(detailId);
-            if (detail) tbody.appendChild(detail);
-          }
           const nextDetail = row.nextElementSibling;
           if (nextDetail && nextDetail.classList.contains("detail-row")) {
             tbody.appendChild(nextDetail);
@@ -129,47 +124,20 @@
     const filter = document.getElementById("status-filter");
     const count  = document.getElementById("cov-count");
 
-    // Find max depth for bar scaling
     const maxDepth = Math.max(...COVERAGE.map(r => r.mean_depth || 0), 1);
-
-    function renderRows() {
-      const term     = (search?.value || "").toLowerCase();
-      const statusF  = filter?.value || "all";
-
-      let visible = 0;
-      tbody.querySelectorAll("tr").forEach(tr => {
-        const gene   = (tr.dataset.gene   || "").toLowerCase();
-        const status = (tr.dataset.status || "").toUpperCase();
-        const matchG = !term   || gene.includes(term);
-        const matchS = statusF === "all" || status === statusF;
-        const show   = matchG && matchS;
-        tr.classList.toggle("hidden", !show);
-        if (show) visible++;
-      });
-      if (count) {
-        // Determine the right label: chromosomes vs genes vs regions
-        const label = _covLabel();
-        count.textContent = `${visible} / ${COVERAGE.length} ${label}`;
-      }
-    }
 
     // Build rows
     COVERAGE.forEach(r => {
-      const status    = r.status || "FAIL";
-      const rowClass  = { PASS: "row-pass", WARN: "row-warn", FAIL: "row-fail" }[status] || "";
-      const statusLabel = {
-        PASS: "✅ PASS", WARN: "⚠️ WARN", FAIL: "❌ FAIL"
-      }[status] || status;
-      const statusClass = {
-        PASS: "status-pass", WARN: "status-warn", FAIL: "status-fail"
-      }[status] || "";
-
+      const status      = r.status || "FAIL";
+      const rowClass    = { PASS: "row-pass", WARN: "row-warn", FAIL: "row-fail" }[status] || "";
+      const statusLabel = { PASS: "✅ PASS", WARN: "⚠️ WARN", FAIL: "❌ FAIL" }[status] || status;
+      const statusClass = { PASS: "status-pass", WARN: "status-warn", FAIL: "status-fail" }[status] || "";
       const barPct = Math.min(100, (r.mean_depth / maxDepth) * 100).toFixed(1);
       const pct20  = r.pct_20x != null ? r.pct_20x.toFixed(1) + "%" : "—";
       const pct10  = r.pct_10x != null ? r.pct_10x.toFixed(1) + "%" : "—";
 
       const tr = document.createElement("tr");
-      tr.className   = rowClass;
+      tr.className      = rowClass;
       tr.dataset.gene   = r.gene || "";
       tr.dataset.status = status;
       tr.dataset.depth  = r.mean_depth || 0;
@@ -189,21 +157,30 @@
         <td><span class="${statusClass}">${statusLabel}</span></td>
       `;
 
-      // clicking gene scrolls to its variants
       tr.querySelector(".gene-link")?.addEventListener("click", e => {
         e.preventDefault();
         const anchor = document.getElementById("gene-" + encodeURIComponent(r.gene));
         if (anchor) anchor.scrollIntoView({ behavior: "smooth", block: "start" });
-        // highlight gene in variant filter
         const gf = document.getElementById("var-gene-filter");
-        if (gf) {
-          gf.value = r.gene;
-          gf.dispatchEvent(new Event("input"));
-        }
+        if (gf) { gf.value = r.gene; gf.dispatchEvent(new Event("input")); }
       });
 
       tbody.appendChild(tr);
     });
+
+    function renderRows() {
+      const term    = (search?.value || "").toLowerCase();
+      const statusF = filter?.value || "all";
+      let visible   = 0;
+      tbody.querySelectorAll("tr").forEach(tr => {
+        const matchG = !term    || (tr.dataset.gene   || "").toLowerCase().includes(term);
+        const matchS = statusF === "all" || (tr.dataset.status || "").toUpperCase() === statusF;
+        const show   = matchG && matchS;
+        tr.classList.toggle("hidden", !show);
+        if (show) visible++;
+      });
+      if (count) count.textContent = `${visible} / ${COVERAGE.length} ${_covLabel()}`;
+    }
 
     makeTableSortable(tableEl);
     search?.addEventListener("input", renderRows);
@@ -212,34 +189,31 @@
   }
 
   /* ── Variant table ──────────────────────────────────── */
-  const PAGE_SIZE = 200;   // render in batches for performance
+  const PAGE_SIZE = 200;
 
   function buildVariantTable() {
-    const tableEl   = document.getElementById("variant-table");
+    const tableEl  = document.getElementById("variant-table");
     if (!tableEl) return;
 
-    const tbody     = tableEl.querySelector("tbody");
-    const geneF     = document.getElementById("var-gene-filter");
-    const csqF      = document.getElementById("var-csq-filter");
-    const cvF       = document.getElementById("var-cv-filter");
-    const textF     = document.getElementById("var-text-filter");
-    const count     = document.getElementById("var-count");
-    const loadMore  = document.getElementById("load-more-btn");
+    const tbody    = tableEl.querySelector("tbody");
+    const geneF    = document.getElementById("var-gene-filter");
+    const csqF     = document.getElementById("var-csq-filter");
+    const cvF      = document.getElementById("var-cv-filter");
+    const textF    = document.getElementById("var-text-filter");
+    const count    = document.getElementById("var-count");
+    const loadMore = document.getElementById("load-more-btn");
 
-    let filtered    = [...VARIANTS];
-    let rendered    = 0;
-
-    // Stamp each variant with its original index once, so renderBatch
-    // never needs O(n) indexOf lookups (was O(n²) for large VCFs).
+    // Stamp each variant with its original index (O(1) lookup in renderBatch)
     VARIANTS.forEach((v, i) => { v._idx = i; });
 
-    // Build rows lazily
-    const rowCache  = new Map();   // index -> {main, detail}
+    let filtered = [...VARIANTS];
+    let rendered = 0;
+
+    const rowCache = new Map();
 
     function getRow(idx) {
       if (rowCache.has(idx)) return rowCache.get(idx);
-      const v    = VARIANTS[idx];
-      const pair = buildVariantRow(v, idx);
+      const pair = buildVariantRow(VARIANTS[idx], idx);
       rowCache.set(idx, pair);
       return pair;
     }
@@ -268,20 +242,17 @@
         return true;
       });
 
-      // Clear tbody
       while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
       rendered = 0;
       renderBatch();
-
       if (count) count.textContent = `${filtered.length} / ${VARIANTS.length} variants`;
     }
 
     function renderBatch() {
-      const end = Math.min(rendered + PAGE_SIZE, filtered.length);
+      const end  = Math.min(rendered + PAGE_SIZE, filtered.length);
       const frag = document.createDocumentFragment();
-
       for (let i = rendered; i < end; i++) {
-        // Use pre-stamped _idx — O(1) lookup instead of O(n) indexOf
+        // O(1): use pre-stamped _idx, not indexOf
         const origIdx = filtered[i]._idx ?? i;
         const { main, detail } = getRow(origIdx);
         frag.appendChild(main);
@@ -289,7 +260,6 @@
       }
       tbody.appendChild(frag);
       rendered = end;
-
       if (loadMore) {
         loadMore.style.display = rendered < filtered.length ? "inline-block" : "none";
         loadMore.textContent = `Load more (${filtered.length - rendered} remaining)`;
@@ -312,10 +282,9 @@
     const filt     = v.filter || "PASS";
     const cvClass  = clinvarClass(v.clinvar || "");
 
-    // Main row
     const main = document.createElement("tr");
-    main.id = `gene-${encodeURIComponent(v.gene || "")}`;  // anchor for gene links
-    main.className = "gene-anchor";
+    main.id                = `gene-${encodeURIComponent(v.gene || "")}`;
+    main.className         = "gene-anchor";
     main.dataset.detailFor = detailId;
     main.dataset.gene      = v.gene || "";
     main.dataset.csq       = v.consequence || "";
@@ -326,9 +295,7 @@
     const afClass   = v.gnomad_af && v.gnomad_af > 0.01 ? "af-common" : "af-rare";
 
     main.innerHTML = `
-      <td>
-        <button class="expand-btn" data-target="${detailId}" title="Expand details">▶</button>
-      </td>
+      <td><button class="expand-btn" data-target="${detailId}" title="Expand details">▶</button></td>
       <td><strong>${escHtml(v.gene || "—")}</strong>${varTypeBadge(v.variant_type)}</td>
       <td class="mono" title="${escHtml(v.consequence || "")}">${truncate(escHtml(v.consequence || "—"), 30)}</td>
       <td class="mono" title="${escHtml(v.hgvs_c || "")}">${truncate(escHtml(v.hgvs_c || "—"), 25)}</td>
@@ -343,27 +310,25 @@
       <td><span class="${filterPillClass(filt)}">${escHtml(filt)}</span></td>
     `;
 
-    // Expand button handler
     main.querySelector(".expand-btn").addEventListener("click", function () {
       this.classList.toggle("open");
       const detailRow = document.getElementById(detailId);
       if (detailRow) {
         detailRow.classList.toggle("open");
-        // Draw sparkline on first open
         if (detailRow.classList.contains("open") && !detailRow.dataset.drawn) {
-          drawSparkline(detailRow, v);
+          drawSparkline(detailRow, idx);
           detailRow.dataset.drawn = "1";
         }
       }
     });
 
-    // Detail row
     const detail = document.createElement("tr");
-    detail.id = detailId;
+    detail.id        = detailId;
     detail.className = "detail-row";
 
-    const adStr = v.ad ? v.ad.join(",") : "N/A";
+    const adStr  = v.ad ? v.ad.join(",") : "N/A";
     const locStr = `${v.chrom}:${v.pos} ${v.ref}→${v.alt}`;
+    const hasSparkData = HAS_SPARKS && SPARK_WINDOWS[idx] && SPARK_WINDOWS[idx].some(d => d > 0);
 
     detail.innerHTML = `
       <td colspan="13" class="detail-cell">
@@ -396,7 +361,9 @@
               <div class="kv-row"><span class="k">VAF</span><span class="v">${formatVAF(v.vaf)}</span></div>
             </div>
             <div class="sparkline-wrap" id="spark-wrap-${idx}">
-              ${HAS_SPARKS && v.ad ? '<div class="sparkline-title">Coverage (200 bp window)</div><div class="sparkline-container"></div>' : '<div style="color:var(--c-muted);font-size:.8rem;margin-top:.5rem">Coverage sparkline not available (no per-base data or AD field)</div>'}
+              ${hasSparkData
+                ? '<div class="sparkline-title">Coverage (±' + SPARK_WINDOW + ' bp window)</div><div class="sparkline-container"></div>'
+                : '<div style="color:var(--c-muted);font-size:.8rem;margin-top:.5rem">Coverage sparkline not available</div>'}
             </div>
           </div>
         </div>
@@ -406,38 +373,31 @@
     return { main, detail };
   }
 
-  /* ── D3 Sparkline ───────────────────────────────────── */
-  function drawSparkline(detailRow, v) {
-    if (!HAS_SPARKS || !v.ad) return;
+  /* ── D3 Sparkline (new pre-extracted window format) ─── */
+  function drawSparkline(detailRow, variantIdx) {
+    if (!HAS_SPARKS) return;
     if (typeof d3 === "undefined") return;
 
     const container = detailRow.querySelector(".sparkline-container");
     if (!container) return;
 
-    // Extract window data
-    const chrom   = v.chrom;
-    const pos     = v.pos;
-    const WINDOW  = 100;  // ±100bp = 200bp total
-    const chromData = SPARK_DATA[chrom] || {};
+    const depths = SPARK_WINDOWS[variantIdx];
+    const startPos = SPARK_START[variantIdx] || 0;
 
-    const points = [];
-    for (let p = Math.max(1, pos - WINDOW); p <= pos + WINDOW; p++) {
-      points.push({ pos: p, depth: chromData[p] || 0 });
-    }
-
-    if (points.every(p => p.depth === 0)) {
+    if (!depths || depths.length === 0 || depths.every(d => d === 0)) {
       container.innerHTML = '<div style="color:var(--c-muted);font-size:.8rem">No per-base data for this region</div>';
       return;
     }
 
-    const W    = 440;
-    const H    = 90;
-    const mL   = 38;
-    const mR   = 10;
-    const mT   = 8;
-    const mB   = 22;
-    const iW   = W - mL - mR;
-    const iH   = H - mT - mB;
+    // Build points array: [{pos, depth}, ...]
+    const points = depths.map((depth, i) => ({ pos: startPos + i, depth }));
+    // Variant position = startPos + SPARK_WINDOW (centre of the window)
+    const varPos = startPos + SPARK_WINDOW;
+
+    const W  = 440, H  = 90;
+    const mL = 38,  mR = 10, mT = 8, mB = 22;
+    const iW = W - mL - mR;
+    const iH = H - mT - mB;
 
     const maxD = Math.max(d3.max(points, d => d.depth), MIN_DP * 1.1);
 
@@ -453,14 +413,12 @@
 
     const svg = d3.select(container)
       .append("svg")
-      .attr("width", W)
-      .attr("height", H)
+      .attr("width", W).attr("height", H)
       .attr("class", "sparkline-svg")
       .attr("role", "img")
-      .attr("aria-label", `Coverage at ${chrom}:${pos}`);
+      .attr("aria-label", `Coverage window at pos ${varPos.toLocaleString()}`);
 
-    const g = svg.append("g")
-      .attr("transform", `translate(${mL},${mT})`);
+    const g = svg.append("g").attr("transform", `translate(${mL},${mT})`);
 
     // Bars
     g.selectAll(".spark-bar")
@@ -474,68 +432,52 @@
       .attr("fill", d => depthColor(d.depth))
       .attr("opacity", 0.85);
 
-    // Reference line at MIN_DP
+    // MIN_DP reference line
     if (yScale(MIN_DP) >= 0) {
       g.append("line")
         .attr("x1", 0).attr("x2", iW)
         .attr("y1", yScale(MIN_DP)).attr("y2", yScale(MIN_DP))
-        .attr("stroke", "#6c8ef5")
-        .attr("stroke-dasharray", "3,2")
-        .attr("stroke-width", 1)
-        .attr("opacity", 0.7);
-
+        .attr("stroke", "#6c8ef5").attr("stroke-dasharray", "3,2")
+        .attr("stroke-width", 1).attr("opacity", 0.7);
       g.append("text")
-        .attr("x", -4)
-        .attr("y", yScale(MIN_DP) + 3)
-        .attr("text-anchor", "end")
-        .attr("fill", "#6c8ef5")
-        .attr("font-size", "9px")
-        .text(MIN_DP + "x");
+        .attr("x", -4).attr("y", yScale(MIN_DP) + 3)
+        .attr("text-anchor", "end").attr("fill", "#6c8ef5")
+        .attr("font-size", "9px").text(MIN_DP + "x");
     }
 
-    // Variant position marker
-    const varX = xScale(pos);
+    // Variant position marker (centre of window)
+    const varX = xScale(varPos);
     if (varX !== undefined) {
       g.append("line")
         .attr("x1", varX + xScale.bandwidth() / 2)
         .attr("x2", varX + xScale.bandwidth() / 2)
         .attr("y1", 0).attr("y2", iH)
-        .attr("stroke", "#f59e0b")
-        .attr("stroke-width", 1.5)
-        .attr("opacity", 0.9);
+        .attr("stroke", "#f59e0b").attr("stroke-width", 1.5).attr("opacity", 0.9);
     }
 
     // Y axis
     g.append("g")
       .call(d3.axisLeft(yScale).ticks(4).tickSize(2))
       .call(ax => ax.select(".domain").remove())
-      .call(ax => ax.selectAll("text")
-        .attr("fill", "#8892aa")
-        .attr("font-size", "9px"))
+      .call(ax => ax.selectAll("text").attr("fill", "#8892aa").attr("font-size", "9px"))
       .call(ax => ax.selectAll("line").attr("stroke", "#2e3250"));
 
-    // X axis labels (just start, variant, end)
-    const xTickPositions = [points[0].pos, pos, points[points.length - 1].pos];
-    g.append("g")
-      .attr("transform", `translate(0,${iH})`)
-      .selectAll("text")
-      .data(xTickPositions)
-      .join("text")
+    // X axis — show start, variant, end positions
+    const xTicks = [points[0].pos, varPos, points[points.length - 1].pos];
+    g.append("g").attr("transform", `translate(0,${iH})`)
+      .selectAll("text").data(xTicks).join("text")
       .attr("x", d => (xScale(d) || 0) + xScale.bandwidth() / 2)
-      .attr("y", 12)
-      .attr("text-anchor", "middle")
-      .attr("fill", "#8892aa")
-      .attr("font-size", "9px")
+      .attr("y", 12).attr("text-anchor", "middle")
+      .attr("fill", "#8892aa").attr("font-size", "9px")
       .text(d => d.toLocaleString());
 
-    // Tooltip (shared)
+    // Tooltip
     let tooltip = document.querySelector(".spark-tooltip");
     if (!tooltip) {
       tooltip = document.createElement("div");
       tooltip.className = "spark-tooltip";
       document.body.appendChild(tooltip);
     }
-
     g.selectAll(".spark-bar")
       .on("mousemove", function (event, d) {
         tooltip.style.display = "block";
@@ -547,14 +489,11 @@
   }
 
   /* ── Coverage label helper ──────────────────────────── */
-  // Decide whether the coverage rows represent chromosomes, genes, or generic regions.
   function _covLabel() {
     if (!COVERAGE.length) return "regions";
-    // If ≥80% of names look like standard chromosome names (chr1…chrY, 1…22, X, Y, MT)
-    const chromRe = /^(chr)?(\d{1,2}|X|Y|MT?|Un)(_\w+)?$/i;
+    const chromRe    = /^(chr)?(\d{1,2}|X|Y|MT?)(_\w+)?$/i;
     const chromCount = COVERAGE.filter(r => chromRe.test(r.gene || "")).length;
     if (chromCount / COVERAGE.length >= 0.8) return "chromosomes";
-    // If names look like coord-style "chr1:100-200"
     const coordCount = COVERAGE.filter(r => (r.gene || "").includes(":") && (r.gene || "").includes("-")).length;
     if (coordCount / COVERAGE.length >= 0.8) return "regions";
     return "genes";

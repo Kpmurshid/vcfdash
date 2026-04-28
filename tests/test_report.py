@@ -196,7 +196,9 @@ class TestBuildJsPayload:
     def test_contains_required_keys(self, coverage_data, variant_data, args):
         payload_str = _build_js_payload({}, coverage_data, variant_data, args)
         parsed = json.loads(payload_str)
-        for k in ("sample_id", "thresholds", "qc", "coverage", "variants", "sparklines"):
+        # New sparkline format: parallel arrays, not a full genome dict
+        for k in ("sample_id", "thresholds", "qc", "coverage", "variants",
+                  "spark_windows", "spark_start", "has_sparklines"):
             assert k in parsed, f"Missing payload key: {k}"
 
     def test_variants_present(self, coverage_data, variant_data, args):
@@ -208,7 +210,9 @@ class TestBuildJsPayload:
         args.no_sparklines = True
         payload_str = _build_js_payload({}, coverage_data, variant_data, args)
         parsed = json.loads(payload_str)
-        assert parsed["sparklines"] == {}
+        # With no_sparklines=True, windows arrays should be empty and flag False
+        assert parsed["spark_windows"] == []
+        assert parsed["spark_start"]   == []
         assert parsed["has_sparklines"] is False
 
     def test_ad_serialised_as_list(self, coverage_data, variant_data, args):
