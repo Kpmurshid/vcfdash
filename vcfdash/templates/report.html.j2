@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>vcfdash — {{ sample_id }}</title>
+  <meta name="description" content="Clinical variant and coverage report for {{ sample_id }}" />
+  <!-- All styles inlined — no external dependencies -->
+  <style>
+{{ css }}
+  </style>
+</head>
+<body>
+<div class="page-wrap">
+
+  <!-- ═══════════════════════════════════════════════════════
+       SITE HEADER
+  ═══════════════════════════════════════════════════════ -->
+  <header class="site-header">
+    <div class="logo">vcf<span>dash</span></div>
+    <div style="font-size:.95rem;font-weight:600;color:var(--c-text)">
+      {{ sample_id }}
+    </div>
+    <div class="meta">
+      Genome: {{ genome }}<br>
+      Generated: {{ generated_at }}<br>
+      vcfdash v{{ version }}
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════════════════════════════════
+       WARNINGS
+  ═══════════════════════════════════════════════════════ -->
+  {% for w in warnings %}
+  <div class="warning-banner">
+    <span>⚠️</span>
+    <span>{{ w }}</span>
+  </div>
+  {% endfor %}
+
+  <!-- ═══════════════════════════════════════════════════════
+       PANEL 1 — QC SUMMARY
+  ═══════════════════════════════════════════════════════ -->
+  <section class="qc-panel" aria-label="QC Summary">
+    <div class="section-title">① QC Summary</div>
+    <div class="qc-grid">
+
+      <div class="qc-card" title="Mean coverage over the supplied BED intervals (bait/capture regions). This may differ from Picard MEAN_TARGET_COVERAGE if a different target BED is used.">
+        <div class="label">Mean Coverage (on-BED)</div>
+        <div class="value {{ 'metric-good' if qc.mean_coverage >= thresholds.min_dp else ('metric-warn' if qc.mean_coverage >= thresholds.min_dp * 0.5 else 'metric-bad') }}">
+          {{ "%.1f"|format(qc.mean_coverage) }}x
+        </div>
+        <div class="sub">target ≥{{ thresholds.min_dp }}x · {{ qc.bed_target_mb }} Mb BED</div>
+      </div>
+
+      <div class="qc-card">
+        <div class="label">Bases ≥{{ thresholds.min_dp }}x</div>
+        <div class="value {{ 'metric-good' if qc.pct_bases_above_20x >= 95 else ('metric-warn' if qc.pct_bases_above_20x >= 80 else 'metric-bad') }}">
+          {{ "%.1f"|format(qc.pct_bases_above_20x) }}%
+        </div>
+        <div class="sub">of targeted bases</div>
+      </div>
+
+      <div class="qc-card">
+        <div class="label">Bases ≥{{ thresholds.min_dp2 }}x</div>
+        <div class="value {{ 'metric-good' if qc.pct_bases_above_10x >= 95 else ('metric-warn' if qc.pct_bases_above_10x >= 80 else 'metric-bad') }}">
+          {{ "%.1f"|format(qc.pct_bases_above_10x) }}%
+        </div>
+        <div class="sub">of targeted bases</div>
+      </div>
+
+      <div class="qc-card">
+        <div class="label">Total Variants</div>
+        <div class="value" style="color:var(--c-accent)">
+          {{ qc.total_variants }}
+        </div>
+        <div class="sub">{{ qc.pass_variants }} PASS / {{ qc.flagged_variants }} flagged</div>
+      </div>
+
+      <div class="qc-card">
+        <div class="label">SNV</div>
+        <div class="value" style="color:var(--c-accent)">{{ qc.snv_count }}</div>
+        <div class="sub">single nucleotide</div>
+      </div>
+
+      <div class="qc-card">
+        <div class="label">INDEL</div>
+        <div class="value" style="color:var(--c-vus)">{{ qc.indel_count }}</div>
+        <div class="sub">insertions / deletions</div>
+      </div>
+
+      <div class="qc-card">
+        <div class="label">MNV</div>
+        <div class="value" style="color:var(--c-path)">{{ qc.mnv_count }}</div>
+        <div class="sub">multi-nucleotide</div>
+      </div>
+
+      <div class="qc-card">
+        <div class="label">Ti / Tv</div>
+        <div class="value {{ 'metric-good' if qc.titv_ratio >= 1.8 and qc.titv_ratio <= 3.5 else 'metric-warn' }}">
+          {{ "%.2f"|format(qc.titv_ratio) }}
+        </div>
+        <div class="sub">expected 2.0–3.3 (WES)</div>
+      </div>
+
+    </div><!-- /qc-grid -->
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════
+       PANEL 2 — GENE COVERAGE
+  ═══════════════════════════════════════════════════════ -->
+  <section class="coverage-panel" aria-label="Coverage">
+    <div class="section-title">② Coverage</div>
+
+    <div class="table-controls">
+      <input type="search" id="gene-search" placeholder="Search…" aria-label="Search" />
+      <select id="status-filter" aria-label="Filter by status">
+        <option value="all">All statuses</option>
+        <option value="PASS">✅ PASS only</option>
+        <option value="WARN">⚠️ WARN only</option>
+        <option value="FAIL">❌ FAIL only</option>
+      </select>
+      <span class="result-count" id="cov-count"></span>
+    </div>
+
+    <div class="table-wrap">
+      <table id="coverage-table" aria-label="Gene coverage table">
+        <thead>
+          <tr>
+            <th data-col="gene" data-type="str">Region / Gene <i class="sort-icon"></i></th>
+            <th data-col="depth" data-type="num">Mean Depth <i class="sort-icon"></i></th>
+            <th data-col="pct20" data-type="num">≥{{ thresholds.min_dp }}x % <i class="sort-icon"></i></th>
+            <th data-col="pct10" data-type="num">≥{{ thresholds.min_dp2 }}x % <i class="sort-icon"></i></th>
+            <th data-col="status" data-type="str">Status <i class="sort-icon"></i></th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Rows injected by viz.js from window.VCFDASH.coverage -->
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════
+       PANEL 3 — VARIANT TABLE
+  ═══════════════════════════════════════════════════════ -->
+  <section class="variant-panel" aria-label="Variant Table">
+    <div class="section-title">③ Variants</div>
+
+    <div class="variant-filters">
+      <input type="text" id="var-gene-filter"    placeholder="Gene…"        style="width:120px" aria-label="Filter by gene" />
+      <input type="text" id="var-csq-filter"     placeholder="Consequence…" style="width:160px" aria-label="Filter by consequence" />
+      <select id="var-cv-filter" aria-label="Filter by ClinVar">
+        <option value="">All ClinVar</option>
+        <option value="pathogenic">Pathogenic / LP</option>
+        <option value="benign">Benign / LB</option>
+        <option value="vus">VUS</option>
+        <option value="pass">PASS filter only</option>
+      </select>
+      <input type="text" id="var-text-filter" placeholder="Free text search…" style="width:180px" aria-label="Free text search" />
+      <span class="result-count" id="var-count"></span>
+    </div>
+
+    <div class="table-wrap">
+      <table id="variant-table" aria-label="Variant table">
+        <thead>
+          <tr>
+            <th style="width:30px"></th><!-- expand -->
+            <th data-col="gene"  data-type="str">Gene</th>
+            <th data-col="csq"   data-type="str">Consequence</th>
+            <th>HGVSc</th>
+            <th>HGVSp</th>
+            <th data-col="gnomad_af" data-type="num">gnomAD AF</th>
+            <th>ClinVar</th>
+            <th data-col="cadd"  data-type="num">CADD</th>
+            <th>GT</th>
+            <th data-col="depth" data-type="num">DP</th>
+            <th data-col="gq"    data-type="num">GQ</th>
+            <th data-col="vaf"   data-type="num">VAF</th>
+            <th>FILTER</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Rows injected by viz.js from window.VCFDASH.variants -->
+        </tbody>
+      </table>
+    </div>
+
+    <div class="load-more-wrap">
+      <button id="load-more-btn" class="btn" style="display:none">Load more</button>
+    </div>
+  </section>
+
+</div><!-- /page-wrap -->
+
+<!-- ═══════════════════════════════════════════════════════
+     EMBEDDED DATA — all data as JSON blobs
+═══════════════════════════════════════════════════════ -->
+<script>
+window.VCFDASH = {{ vcfdash_json }};
+</script>
+
+<!-- D3.js v7 — inlined for offline use -->
+<script>
+{{ d3_js }}
+</script>
+
+<!-- vcfdash visualization logic — inlined -->
+<script>
+{{ viz_js }}
+</script>
+
+</body>
+</html>

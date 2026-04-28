@@ -1,0 +1,82 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+.installed.cfg
+
+# ── Virtual environments ─────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Testing & coverage ──────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+
+# ── Type checking ────────────────────────────────────────
+.mypy_cache/
+.pytype/
+.pyre/
+
+# ── IDE / editor ─────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Project-specific: test data (large genomic files) ───
+# Keep BED files (small, useful for CI) but exclude BAM/VCF/reports
+test_data/*.bam
+test_data/*.bam.bai
+test_data/*.vcf.gz
+test_data/*.vcf.gz.tbi
+test_data/*.vcf
+test_data/reports/
+test_data/bed_file/bam/
+
+# ── mosdepth intermediate outputs ───────────────────────
+*.regions.bed.gz
+*.regions.bed.gz.csi
+*.per-base.bed.gz
+*.per-base.bed.gz.csi
+*.quantized.bed.gz
+*.quantized.bed.gz.csi
+*.mosdepth.global.dist.txt
+*.mosdepth.region.dist.txt
+*.mosdepth.summary.txt
+
+# ── D3.js bundled copy (auto-downloaded on first run) ───
+vcfdash/templates/assets/d3.min.js
+
+# ── Generated reports ────────────────────────────────────
+*_report.html
+*_report.json
+
+# ── Singularity cache ────────────────────────────────────
+.singularity/
+*.sif
+
+# ── Jupyter ──────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Logs ─────────────────────────────────────────────────
+*.log
