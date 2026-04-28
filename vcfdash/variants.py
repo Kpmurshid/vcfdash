@@ -113,6 +113,17 @@ def _parse_with_cyvcf2(vcf_path: str, warnings_list: list[str]) -> tuple[list[di
             "Displaying raw variant data only."
         )
 
+    # Multi-sample warning: vcfdash always reads sample index 0 (first sample).
+    # Warn if the VCF has >1 sample so users know which sample is being shown.
+    samples = vcf.samples
+    if len(samples) > 1:
+        warnings_list.append(
+            f"Multi-sample VCF detected ({len(samples)} samples: "
+            f"{', '.join(str(s) for s in samples[:5])}{'…' if len(samples) > 5 else ''}). "
+            f"vcfdash displays genotype/DP/AD for sample 0 ({samples[0]}) only. "
+            "Use a single-sample VCF for accurate per-sample QC."
+        )
+
     records: list[dict] = []
 
     for variant in vcf:
@@ -469,9 +480,27 @@ def _extract_snpeff_ann(ann_string: str, ann_fields: list[str]) -> dict[str, Any
 # Variant classification and metrics
 # ---------------------------------------------------------------------------
 
+# Symbolic ALT alleles that indicate structural variants
+_SV_PREFIXES = ("<DEL", "<DUP", "<INS", "<INV", "<CNV", "<BND", "<TRA", "<CPX")
+
+
 def classify_variant_type(ref: str, alt: str) -> str:
-    """Return 'SNV', 'INDEL', or 'MNV'."""
-    if alt in (".", "*"):
+    """
+    Return 'SNV', 'INDEL', 'MNV', or 'SV'.
+
+    SV: symbolic ALT alleles (<DEL>, <DUP>, etc.) or breakend notation
+    SNV: single-base substitution (or spanning deletion '*')
+    INDEL: insertion or deletion
+    MNV: multi-nucleotide variant (same length, >1 base)
+    """
+    # Structural / symbolic alleles — must check BEFORE length comparison
+    if alt.startswith("<") or alt.startswith(".") or alt.endswith(".") or "[" in alt or "]" in alt:
+        return "SV"
+    # Spanning deletion — this position is covered by an upstream deletion
+    if alt == "*":
+        return "SNV"
+    # Missing / monomorphic ref
+    if alt == ".":
         return "SNV"
     if len(ref) == 1 and len(alt) == 1:
         return "SNV"

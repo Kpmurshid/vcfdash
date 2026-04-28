@@ -316,6 +316,9 @@ def compute_qc(
     snv_count = sum(1 for v in variant_data if v.get("variant_type") == "SNV")
     ind_count = sum(1 for v in variant_data if v.get("variant_type") == "INDEL")
     mnv_count = sum(1 for v in variant_data if v.get("variant_type") == "MNV")
+    sv_count  = sum(1 for v in variant_data if v.get("variant_type") == "SV")
+    # PASS: filter field is exactly "PASS" or missing (None/"")
+    # "." means no filter was applied — treat as PASS per VCF spec §1.6.1
     pass_count = sum(
         1 for v in variant_data
         if (v.get("filter") or "PASS") in ("PASS", ".", "")
