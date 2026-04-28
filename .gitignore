@@ -43,7 +43,7 @@ coverage.xml
 Thumbs.db
 
 # ── Project-specific: test data (large genomic files) ───
-# Keep BED files (small, useful for CI) but exclude BAM/VCF/reports
+# Keep small BED files for CI; exclude large/intermediate files
 test_data/*.bam
 test_data/*.bam.bai
 test_data/*.vcf.gz
@@ -51,6 +51,10 @@ test_data/*.vcf.gz.tbi
 test_data/*.vcf
 test_data/reports/
 test_data/bed_file/bam/
+# Large BED files (>50 MB — excluded from git)
+test_data/bed_file/hg38_Twist.sorted.bed
+test_data/bed_file/hg38_Twist.antitargets.bed
+test_data/bed_file/hg38_Twist_Bioscience_for_Illumina_Exome_2_5.bed
 
 # ── mosdepth intermediate outputs ───────────────────────
 *.regions.bed.gz
