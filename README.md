@@ -89,9 +89,9 @@ singularity exec --bind <dirs> /path/to/mosdepth.sif mosdepth <args>
 ```
 
 Auto-detected SIF locations (checked in order):
-- `/COLD_STORAGE/software/tools/mosdepth/mosdepth.sif`
-- `/opt/software/mosdepth/mosdepth.sif`
 - `~/singularity/mosdepth.sif`
+- `/opt/software/mosdepth/mosdepth.sif`
+- `/usr/local/lib/mosdepth/mosdepth.sif`
 
 ### Option 3 — Docker
 
