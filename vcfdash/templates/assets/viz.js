@@ -229,6 +229,10 @@
     let filtered    = [...VARIANTS];
     let rendered    = 0;
 
+    // Stamp each variant with its original index once, so renderBatch
+    // never needs O(n) indexOf lookups (was O(n²) for large VCFs).
+    VARIANTS.forEach((v, i) => { v._idx = i; });
+
     // Build rows lazily
     const rowCache  = new Map();   // index -> {main, detail}
 
@@ -277,8 +281,9 @@
       const frag = document.createDocumentFragment();
 
       for (let i = rendered; i < end; i++) {
-        const origIdx = VARIANTS.indexOf(filtered[i]);
-        const { main, detail } = getRow(origIdx >= 0 ? origIdx : i);
+        // Use pre-stamped _idx — O(1) lookup instead of O(n) indexOf
+        const origIdx = filtered[i]._idx ?? i;
+        const { main, detail } = getRow(origIdx);
         frag.appendChild(main);
         frag.appendChild(detail);
       }

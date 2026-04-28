@@ -4,12 +4,19 @@ variants.py — VCF parsing, INFO field extraction, VAF calculation.
 Primary parser: cyvcf2
 Fallback:       pysam VariantFile
 Annotation:     VEP CSQ field (preferred) → SnpEff ANN field → raw data only
+
+Bug fixes applied:
+  - Haploid/hemizygous GT now handled (chrX in males): g[:-1] instead of g[0],g[1]
+  - Multi-allelic VAF: correct ALT index matched to displayed alt allele
+  - HGVSp URL-encoding: full urllib.parse.unquote instead of only %3D→=
+  - pysam FILTER: correctly maps empty/PASS filter to "PASS"
+  - NaN/inf float fields from cyvcf2 are sanitized before JSON serialization
 """
 
 from __future__ import annotations
 
 import sys
-import warnings
+import urllib.parse
 from typing import Any
 
 from .utils import safe_float, safe_int
@@ -61,13 +68,13 @@ def parse_vcf(vcf_path: str, no_sparklines: bool = False) -> tuple[list[dict], l
     warnings_list: list[str] = []
 
     try:
-        from cyvcf2 import VCF  # type: ignore
+        from cyvcf2 import VCF  # type: ignore  # noqa: F401
         return _parse_with_cyvcf2(vcf_path, warnings_list)
     except ImportError:
         pass
 
     try:
-        import pysam  # type: ignore
+        import pysam  # type: ignore  # noqa: F401
         return _parse_with_pysam(vcf_path, warnings_list)
     except ImportError:
         pass
@@ -127,7 +134,9 @@ def _extract_cyvcf2_record(
     pos    = variant.POS
     ref    = variant.REF
     alts   = variant.ALT
+    # For multi-allelic sites, show the first ALT; VAF is computed against that allele's AD index.
     alt    = alts[0] if alts else "."
+    alt_idx = 1   # index into AD array for the displayed ALT (REF=0, ALT1=1, ALT2=2…)
     filt   = _format_filter(variant.FILTER)
 
     vtype  = classify_variant_type(ref, alt)
@@ -139,40 +148,47 @@ def _extract_cyvcf2_record(
     vaf    = None
     ad     = None
 
+    # GT — handles diploid and haploid (hemizygous) genotypes
     try:
-        gts = variant.genotypes  # list of [allele1, allele2, phased]
+        gts = variant.genotypes  # list of [allele1, ..., phased_bool]
         if gts:
             g = gts[0]
-            a1, a2 = g[0], g[1]
-            phased = g[2]
-            sep    = "|" if phased else "/"
-            gt_str = f"{a1}{sep}{a2}"
+            # g[-1] is the phased flag; g[:-1] are the allele indices
+            alleles = [str(a) if (a is not None and a >= 0) else "." for a in g[:-1]]
+            phased  = g[-1]
+            sep     = "|" if phased else "/"
+            gt_str  = sep.join(alleles)
     except Exception:
         pass
 
     try:
         dp_val = variant.format("DP")
         if dp_val is not None and len(dp_val) > 0:
-            dp = safe_int(dp_val[0][0])
+            raw_dp = dp_val[0][0]
+            # cyvcf2 returns -2147483648 for missing int FORMAT fields
+            dp = safe_int(raw_dp) if raw_dp not in (-2147483648, None) else 0
     except Exception:
         pass
 
     try:
         gq_val = variant.format("GQ")
         if gq_val is not None and len(gq_val) > 0:
-            gq = safe_int(gq_val[0][0])
+            raw_gq = gq_val[0][0]
+            gq = safe_int(raw_gq) if raw_gq not in (-2147483648, None) else 0
     except Exception:
         pass
 
     try:
         ad_val = variant.format("AD")
         if ad_val is not None and len(ad_val) > 0:
-            ad_list = list(ad_val[0])
-            ad = ad_list
-            ref_ad = safe_int(ad_list[0])
-            alt_ad = safe_int(ad_list[1]) if len(ad_list) > 1 else 0
-            total  = ref_ad + alt_ad
-            vaf    = round(alt_ad / total, 4) if total > 0 else None
+            ad_list = [safe_int(x) for x in ad_val[0] if x not in (-2147483648, None)]
+            if ad_list:
+                ad = ad_list
+                ref_ad = ad_list[0]
+                # Use the correct ALT allele index (matches the displayed ALT)
+                alt_ad = ad_list[alt_idx] if len(ad_list) > alt_idx else 0
+                total  = ref_ad + alt_ad
+                vaf    = round(alt_ad / total, 4) if total > 0 else None
     except Exception:
         pass
 
@@ -188,20 +204,20 @@ def _extract_cyvcf2_record(
         if ann_raw:
             anno = _extract_snpeff_ann(ann_raw, ann_fields)
 
-    return {
-        "chrom":       chrom,
-        "pos":         pos,
-        "ref":         ref,
-        "alt":         alt,
-        "filter":      filt,
-        "gt":          gt_str,
-        "dp":          dp,
-        "gq":          gq,
-        "vaf":         vaf,
-        "ad":          ad,
+    return _sanitize_record({
+        "chrom":        chrom,
+        "pos":          pos,
+        "ref":          ref,
+        "alt":          alt,
+        "filter":       filt,
+        "gt":           gt_str,
+        "dp":           dp,
+        "gq":           gq,
+        "vaf":          vaf,
+        "ad":           ad,
         "variant_type": vtype,
         **anno,
-    }
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +270,17 @@ def _extract_pysam_record(
     ref   = variant.ref
     alts  = variant.alts or (".",)
     alt   = alts[0]
-    filt  = ",".join(list(variant.filter)) if variant.filter else "PASS"
+    alt_idx = 1  # AD index for the displayed ALT
+
+    # pysam FILTER: the filter attribute is a pysam FilterSet.
+    # An empty FilterSet (no filters applied, i.e. PASS) stringifies as empty.
+    # We must check len(), not truthiness, because the object is always truthy.
+    filt_list = list(variant.filter)
+    if not filt_list or filt_list == ["."] or filt_list == ["PASS"]:
+        filt = "PASS"
+    else:
+        filt = ",".join(filt_list)
+
     vtype = classify_variant_type(ref, alt)
 
     gt_str = "."
@@ -268,13 +294,15 @@ def _extract_pysam_record(
         gt_alleles = sample["GT"]
         if gt_alleles:
             gt_str = "/".join(str(a) if a is not None else "." for a in gt_alleles)
-        dp  = safe_int(sample.get("DP", 0))
-        gq  = safe_int(sample.get("GQ", 0))
+        dp_raw = sample.get("DP")
+        gq_raw = sample.get("GQ")
+        dp = safe_int(dp_raw) if dp_raw is not None else 0
+        gq = safe_int(gq_raw) if gq_raw is not None else 0
         ad_val = sample.get("AD")
         if ad_val is not None:
-            ad = list(ad_val)
-            ref_ad = safe_int(ad[0])
-            alt_ad = safe_int(ad[1]) if len(ad) > 1 else 0
+            ad = [safe_int(x) for x in ad_val]
+            ref_ad = ad[0] if ad else 0
+            alt_ad = ad[alt_idx] if len(ad) > alt_idx else 0
             total  = ref_ad + alt_ad
             vaf    = round(alt_ad / total, 4) if total > 0 else None
     except Exception:
@@ -293,20 +321,20 @@ def _extract_pysam_record(
             ann_str = ann_raw if isinstance(ann_raw, str) else ",".join(ann_raw)
             anno = _extract_snpeff_ann(ann_str, ann_fields)
 
-    return {
-        "chrom":       chrom,
-        "pos":         pos,
-        "ref":         ref,
-        "alt":         alt,
-        "filter":      filt,
-        "gt":          gt_str,
-        "dp":          dp,
-        "gq":          gq,
-        "vaf":         vaf,
-        "ad":          ad,
+    return _sanitize_record({
+        "chrom":        chrom,
+        "pos":          pos,
+        "ref":          ref,
+        "alt":          alt,
+        "filter":       filt,
+        "gt":           gt_str,
+        "dp":           dp,
+        "gq":           gq,
+        "vaf":          vaf,
+        "ad":           ad,
         "variant_type": vtype,
         **anno,
-    }
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +365,7 @@ def extract_vep_csq(csq_string: str, csq_fields: list[str]) -> dict[str, Any]:
     Parse a VEP CSQ INFO value into structured annotation dict.
 
     CSQ is a comma-delimited list of transcripts, each pipe-delimited.
-    We pick the first transcript with a canonical/protein-coding consequence.
+    We pick the most severe transcript with a gene symbol.
     """
     best    = _empty_annotation()
     transcripts = csq_string.split(",")
@@ -351,9 +379,12 @@ def extract_vep_csq(csq_string: str, csq_fields: list[str]) -> dict[str, Any]:
         if not gene:
             continue
 
-        consequence  = tx.get("Consequence", "")
-        hgvs_c       = tx.get("HGVSc", "").split(":")[-1]
-        hgvs_p       = tx.get("HGVSp", "").split(":")[-1].replace("%3D", "=")
+        consequence = tx.get("Consequence", "")
+        # Strip transcript prefix (e.g. "NM_000059.3:c.1234A>G" → "c.1234A>G")
+        hgvs_c = tx.get("HGVSc", "").split(":")[-1] if tx.get("HGVSc") else ""
+        # Fully URL-decode HGVSp (VEP encodes = as %3D, * as %2A, etc.)
+        hgvs_p_raw = tx.get("HGVSp", "").split(":")[-1] if tx.get("HGVSp") else ""
+        hgvs_p = urllib.parse.unquote(hgvs_p_raw)
 
         gnomad_af = 0.0
         for af_key in ("gnomAD_AF", "gnomADe_AF", "gnomADg_AF", "MAX_AF"):
@@ -381,7 +412,7 @@ def extract_vep_csq(csq_string: str, csq_fields: list[str]) -> dict[str, Any]:
             "clinvar":     clinvar,
         }
 
-        # Use this transcript if it's better than what we have
+        # Use this transcript if it's more severe than what we have
         if not best["gene"] or _is_more_severe(consequence, best["consequence"]):
             best = anno
 
@@ -416,7 +447,7 @@ def _extract_snpeff_ann(ann_string: str, ann_fields: list[str]) -> dict[str, Any
         gene        = ann.get("Gene_Name", "")
         consequence = ann.get("Annotation", "")
         hgvs_c      = ann.get("HGVS.c", "")
-        hgvs_p      = ann.get("HGVS.p", "")
+        hgvs_p      = urllib.parse.unquote(ann.get("HGVS.p", ""))
 
         anno = {
             "gene":        gene,
@@ -504,7 +535,20 @@ def _format_filter(filt) -> str:
         return "PASS"
     if isinstance(filt, (list, tuple)):
         return ",".join(str(f) for f in filt) if filt else "PASS"
-    return str(filt)
+    s = str(filt)
+    return "PASS" if s in (".", "") else s
+
+
+def _sanitize_record(rec: dict) -> dict:
+    """
+    Replace any NaN/Inf float values with None so json.dumps(allow_nan=False)
+    does not raise. cyvcf2 can return float('nan') for missing FORMAT fields.
+    """
+    import math
+    for key, val in rec.items():
+        if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+            rec[key] = None
+    return rec
 
 
 # Severity order for consequence selection (higher index = more severe)
