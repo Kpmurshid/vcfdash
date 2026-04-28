@@ -93,13 +93,57 @@ Auto-detected SIF locations (checked in order):
 - `/opt/software/mosdepth/mosdepth.sif`
 - `/usr/local/lib/mosdepth/mosdepth.sif`
 
-### Option 3 — Docker
+### Option 3 — Docker (mosdepth only)
 
 ```bash
 docker pull quay.io/biocontainers/mosdepth:0.3.8--hd299d5a_0
 ```
 
-Use a wrapper script that mounts directories and delegates to Docker.
+---
+
+## Docker Image (vcfdash + mosdepth bundled)
+
+A complete, self-contained Docker image is available on Docker Hub:
+
+```bash
+docker pull kpmurshid/vcfdash:latest
+```
+
+This image bundles **vcfdash 0.1.0** and **mosdepth 0.3.8** — no other tools needed.
+
+### Run with Docker
+
+```bash
+docker run --rm \
+  -v /path/to/data:/data \
+  kpmurshid/vcfdash:latest \
+  --bam  /data/sample.sorted.bam \
+  --vcf  /data/sample.vep.vcf.gz \
+  --bed  /data/panel.bed \
+  --sample-id SAMPLE01 \
+  --outdir /data/reports \
+  --json --no-sparklines
+```
+
+> Mount the directory containing your BAM/VCF/BED files to `/data` inside the container.
+
+### Pull as Singularity SIF (HPC — no root required)
+
+```bash
+# Pull once
+singularity pull vcfdash.sif docker://kpmurshid/vcfdash:latest
+
+# Run (bind your data directory)
+singularity exec --bind /path/to/data vcfdash.sif \
+  python -m vcfdash \
+    --bam  /path/to/data/sample.sorted.bam \
+    --vcf  /path/to/data/sample.vep.vcf.gz \
+    --bed  /path/to/data/panel.bed \
+    --sample-id SAMPLE01 \
+    --outdir /path/to/data/reports
+```
+
+The SIF image contains mosdepth — no `--mosdepth-sif` flag needed when running from this container.
 
 ---
 
