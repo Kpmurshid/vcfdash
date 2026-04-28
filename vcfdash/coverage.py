@@ -130,7 +130,7 @@ def parse_mosdepth_output(
     per_region   = _parse_regions_bed(regions_file, min_dp, min_dp2)
     # If regions have no real gene names (coordinate-only labels), aggregate
     # them by chromosome to keep the report small and usable.
-    per_region   = _aggregate_regions(per_region, min_dp)
+    per_region   = _aggregate_regions(per_region, min_dp, min_dp2)
     global_stats = _parse_summary(summary_file, min_dp, min_dp2, per_region)
 
     sparkline_data: dict[str, list] = {}
@@ -309,6 +309,7 @@ def _estimate_pct_above(mean_depth: float, threshold: int) -> float:
 def _aggregate_regions(
     per_region: list[dict[str, Any]],
     min_dp: int,
+    min_dp2: int = 10,
 ) -> list[dict[str, Any]]:
     """
     Aggregate per-interval records when the BED has no gene names.
@@ -358,7 +359,7 @@ def _aggregate_regions(
         total_bases  = chrom_bases[chrom]
         mean_depth   = round(chrom_depth[chrom] / total_bases, 2) if total_bases > 0 else 0.0
         pct_20x      = _estimate_pct_above(mean_depth, min_dp)
-        pct_10x      = _estimate_pct_above(mean_depth, min_dp // 2 if min_dp > 0 else 10)
+        pct_10x      = _estimate_pct_above(mean_depth, min_dp2)
         n_intervals  = len([r for r in per_region if r["chrom"] == chrom])
         start        = chrom_start[chrom]
         end          = chrom_end[chrom]

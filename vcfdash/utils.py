@@ -29,10 +29,18 @@ def check_file_readable(path: str, label: str = "File") -> Path:
 
 
 def check_bam_index(bam_path: str) -> None:
-    """Ensure a BAM index (.bai) exists next to the BAM file."""
+    """Ensure a BAM index (.bai) exists next to the BAM file.
+
+    Checks two common index naming conventions:
+      sample.bam  →  sample.bam.bai   (samtools default)
+      sample.bam  →  sample.bai       (alternative)
+    """
     bam = Path(bam_path)
-    bai_same = bam.with_suffix(".bam.bai")
-    bai_alt  = Path(str(bam) + ".bai")
+    # .with_suffix replaces only the last extension, so for "sample.bam"
+    # we get "sample.bai" — that's the alternative form. Append ".bai"
+    # directly to get "sample.bam.bai" (samtools default).
+    bai_same = Path(str(bam) + ".bai")   # sample.bam.bai  (samtools default)
+    bai_alt  = bam.with_suffix(".bai")   # sample.bai       (alternative)
     if not bai_same.exists() and not bai_alt.exists():
         _fatal(
             f"BAM index not found for {bam_path}.\n"
@@ -68,10 +76,12 @@ def check_mosdepth(sif: str | None = None) -> tuple[str, str | None]:
     if exe is not None:
         return exe, None
 
-    # 3. Auto-detect well-known SIF locations
+    # 3. Auto-detect well-known SIF locations (generic HPC / workstation paths)
     _WELL_KNOWN_SIFS = [
-        "/COLD_STORAGE/software/tools/mosdepth/mosdepth.sif",
-        "/COLD_STORAGE/database/megha/tools/mosdepth/mosdepth.sif",
+        os.path.expanduser("~/singularity/mosdepth.sif"),
+        "/opt/software/mosdepth/mosdepth.sif",
+        "/usr/local/lib/mosdepth/mosdepth.sif",
+        "/opt/mosdepth/mosdepth.sif",
     ]
     for candidate in _WELL_KNOWN_SIFS:
         if Path(candidate).exists():
